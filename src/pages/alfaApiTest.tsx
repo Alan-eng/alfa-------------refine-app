@@ -1,7 +1,8 @@
-import React, { useState, useRef } from "react";
-import { Card, Input, Button, message, Form, Descriptions, Typography, Table, Tag, Space, Spin, LoadingOutlined, Progress } from "antd";
+import React, { useState, useRef, useEffect } from "react";
+import { Card, Input, Button, message, Form, Descriptions, Typography, Table, Tag, Space, Spin, LoadingOutlined, Progress, Steps } from "antd";
 import { useList } from "@refinedev/core";
 import { alfaDataProvider } from "../providers/alfa";
+import { actionsService } from "../services/actionsService";
 
 interface AlfaAction {
     actionId: string;
@@ -26,7 +27,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export const AlfaApiTest: React.FC = () => {
     const [apiKey, setApiKey] = useState(() => localStorage.getItem('alfaApiKey') || '');
     const [cityId, setCityId] = useState("52");
-    const [interval, setInterval] = useState("1000");
+    const [interval, setInterval] = useState<string>('500');
     const [isFetching, setIsFetching] = useState(false);
     const [isChecking, setIsChecking] = useState(false);
     const [currentStep, setCurrentStep] = useState(0);
@@ -37,6 +38,7 @@ export const AlfaApiTest: React.FC = () => {
     const [maxPriceFilter, setMaxPriceFilter] = useState<number | null>(null);
     const [pageSize, setPageSize] = useState(50);
     const [activeFilter, setActiveFilter] = useState<number | null>(null);
+    const [storedData, setStoredData] = useState(actionsService.getRequest('get_all_actions_by_city', cityId));
     const stopCheckingRef = useRef(false);
 
     const { data, refetch } = useList<{ decode: { actions: AlfaAction[] } }>({
@@ -51,10 +53,18 @@ export const AlfaApiTest: React.FC = () => {
         }
     });
 
-    const filteredActions = data?.data?.decode?.actions?.filter(action => {
+    const filteredActions = storedData?.data?.filter(action => {
         if (activeFilter === null) return true;
         return action.minPrice === activeFilter;
     });
+
+    useEffect(() => {
+        const data = actionsService.getRequest('get_all_actions_by_city', cityId);
+        if (data) {
+            setStoredData(data);
+            setCurrentStep(1);
+        }
+    }, [cityId]);
 
     const handleStopChecking = () => {
         stopCheckingRef.current = true;
@@ -156,23 +166,35 @@ export const AlfaApiTest: React.FC = () => {
         localStorage.setItem('alfaApiKey', newValue);
     };
 
-    const handleStart = () => {
+    const handleCityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const newCityId = e.target.value;
+        setCityId(newCityId);
+        
+        // Проверяем наличие сохраненных данных для нового города
+        const savedData = actionsService.getRequest('get_all_actions_by_city', newCityId);
+        setStoredData(savedData);
+        setCurrentStep(savedData ? 1 : 0);
+        setActiveFilter(null);
+    };
+
+    const handleStart = async () => {
+        setCurrentStep(0);
         setIsFetching(true);
-        refetch()
-            .then((response) => {
-                if (response.data?.data) {
-                    message.success("Данные успешно получены");
-                    setCurrentStep((prev) => prev + 1);
-                } else {
-                    message.error("Получен некорректный ответ от сервера");
-                }
-            })
-            .catch((error) => {
-                message.error(`Ошибка: ${error.message}`);
-            })
-            .finally(() => {
-                setIsFetching(false);
-            });
+        
+        try {
+            const result = await refetch();
+            if (result.data?.data?.decode?.actions) {
+                actionsService.saveRequest('get_all_actions_by_city', cityId, result.data.data.decode.actions);
+                setStoredData(actionsService.getRequest('get_all_actions_by_city', cityId));
+                setCurrentStep(1);
+                message.success('Данные успешно получены и сохранены');
+            }
+        } catch (error) {
+            message.error('Ошибка при получении данных');
+            console.error(error);
+        } finally {
+            setIsFetching(false);
+        }
     };
 
     const handleSearch = (
@@ -221,79 +243,100 @@ export const AlfaApiTest: React.FC = () => {
                 >
                     <Input
                         value={cityId}
-                        onChange={(e) => setCityId(e.target.value)}
+                        onChange={handleCityChange}
                     />
                 </Form.Item>
             </Form>
 
-            <div style={{ 
-                display: 'flex', 
-                gap: '24px', 
-                marginBottom: 24,
-                padding: '24px',
-                background: '#fafafa',
-                borderRadius: 8
-            }}>
-                <Button
-                    type={currentStep >= 0 ? "primary" : "default"}
-                    size="large"
-                    onClick={handleStart}
-                    loading={isFetching}
-                    style={{ 
-                        flex: 1,
-                        height: 'auto',
-                        padding: '24px',
-                        backgroundColor: data?.data?.decode?.actions?.length ? '#13c2c2' : undefined,
-                        borderColor: data?.data?.decode?.actions?.length ? '#13c2c2' : undefined,
-                    }}
-                >
-                    <Space direction="vertical" size="small">
-                        <span style={{ fontSize: 18, fontWeight: 'bold' }}>Шаг 1</span>
-                        <span>Получить список мероприятий</span>
-                    </Space>
-                </Button>
+            <Steps
+                direction="horizontal"
+                size="default"
+                current={currentStep}
+                style={{ 
+                    marginBottom: 24,
+                    padding: '24px',
+                    background: '#fafafa',
+                    borderRadius: 8
+                }}
+                items={[
+                    {
+                        title: 'Получить список мероприятий',
+                        description: (
+                            <>
+                                {storedData && (
+                                    <div style={{ marginBottom: 8, fontSize: 12, color: '#8c8c8c' }}>
+                                        Сохранены данные запроса get_all_actions_by_city для города {cityId}: {new Date(storedData.timestamp).toLocaleString()}
+                                    </div>
+                                )}
+                                <Button
+                                    type={currentStep >= 0 ? "primary" : "default"}
+                                    size="large"
+                                    onClick={handleStart}
+                                    loading={isFetching}
+                                    style={{ 
+                                        width: '100%',
+                                        marginTop: 16,
+                                        backgroundColor: storedData?.data?.length ? '#13c2c2' : undefined,
+                                        borderColor: storedData?.data?.length ? '#13c2c2' : undefined,
+                                    }}
+                                >
+                                    <Space align="center">
+                                        {storedData?.data?.length ? (
+                                            <Tag color="success">Получено: {storedData.data.length}</Tag>
+                                        ) : (
+                                            'Запустить'
+                                        )}
+                                        {isFetching && <Progress type="circle" percent={100} size={20} showInfo={false} status="active" />}
+                                    </Space>
+                                </Button>
+                            </>
+                        ),
+                        status: storedData?.data?.length ? 'finish' : isFetching ? 'process' : currentStep >= 0 ? 'process' : 'wait'
+                    },
+                    {
+                        title: 'Проверить доступность',
+                        description: (
+                            <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 16 }}>
+                                <Button
+                                    type={currentStep >= 1 ? "primary" : "default"}
+                                    size="large"
+                                    onClick={() => checkActionAvailability(storedData?.data)}
+                                    loading={isChecking}
+                                    disabled={!storedData?.data?.length}
+                                    style={{ width: '100%' }}
+                                >
+                                    {isChecking ? 'Проверка...' : 'Запустить'}
+                                </Button>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <Input
+                                        type="number"
+                                        value={interval}
+                                        onChange={(e) => setInterval(e.target.value)}
+                                        size="small"
+                                        style={{ width: 120 }}
+                                        placeholder="Интервал (мс)"
+                                        disabled={isChecking}
+                                    />
+                                    {isChecking && (
+                                        <Button 
+                                            danger
+                                            size="small"
+                                            onClick={handleStopChecking}
+                                        >
+                                            Остановить
+                                        </Button>
+                                    )}
+                                    {isChecking && <Progress type="circle" percent={100} size={20} showInfo={false} status="active" />}
+                                </div>
+                            </Space>
+                        ),
+                        status: isChecking ? 'process' : currentStep >= 1 ? 'finish' : 'wait',
+                        disabled: !storedData?.data?.length
+                    }
+                ]}
+            />
 
-                <Button
-                    type={currentStep >= 1 ? "primary" : "default"}
-                    size="large"
-                    onClick={() => checkActionAvailability(data?.data?.decode?.actions)}
-                    loading={isChecking}
-                    disabled={!data?.data?.decode?.actions?.length}
-                    style={{ 
-                        flex: 1,
-                        height: 'auto',
-                        padding: '24px'
-                    }}
-                >
-                    <Space direction="vertical" size="small">
-                        <span style={{ fontSize: 18, fontWeight: 'bold' }}>Шаг 2</span>
-                        <span>Проверить доступность</span>
-                        {isChecking ? (
-                            <Button 
-                                danger
-                                size="small"
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleStopChecking();
-                                }}
-                            >
-                                Остановить
-                            </Button>
-                        ) : null}
-                        <Input
-                            type="number"
-                            value={interval}
-                            onChange={(e) => setInterval(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            size="small"
-                            style={{ width: 120 }}
-                            placeholder="Интервал (мс)"
-                        />
-                    </Space>
-                </Button>
-            </div>
-
-            {data?.data && (
+            {storedData && (
                 <Card style={{ marginTop: 16 }}>
                     <Space size="large" style={{ marginBottom: 16 }}>
                         <div 
@@ -304,7 +347,7 @@ export const AlfaApiTest: React.FC = () => {
                                 type="circle"
                                 size="small"
                                 percent={100}
-                                format={() => data.data.decode?.actions?.length || 0}
+                                format={() => storedData.data.length || 0}
                                 strokeColor={activeFilter === null ? "#1890ff" : "#d9d9d9"}
                             />
                             <div style={{ marginTop: 8, color: activeFilter === null ? "#1890ff" : "inherit" }}>
@@ -319,7 +362,7 @@ export const AlfaApiTest: React.FC = () => {
                                 type="circle"
                                 size="small"
                                 percent={100}
-                                format={() => data.data.decode?.actions?.filter(action => action.minPrice === 0)?.length || 0}
+                                format={() => storedData.data.filter(action => action.minPrice === 0).length || 0}
                                 strokeColor={activeFilter === 0 ? "#52c41a" : "#d9d9d9"}
                             />
                             <div style={{ marginTop: 8, color: activeFilter === 0 ? "#52c41a" : "inherit" }}>
@@ -334,7 +377,7 @@ export const AlfaApiTest: React.FC = () => {
                                 type="circle"
                                 size="small"
                                 percent={100}
-                                format={() => data.data.decode?.actions?.filter(action => action.minPrice === 111.11)?.length || 0}
+                                format={() => storedData.data.filter(action => action.minPrice === 111.11).length || 0}
                                 strokeColor={activeFilter === 111.11 ? "#722ed1" : "#d9d9d9"}
                             />
                             <div style={{ marginTop: 8, color: activeFilter === 111.11 ? "#722ed1" : "inherit" }}>
