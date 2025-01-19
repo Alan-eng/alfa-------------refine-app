@@ -38,7 +38,7 @@ export const AlfaApiTest: React.FC = () => {
     const [maxPriceFilter, setMaxPriceFilter] = useState<number | null>(null);
     const [pageSize, setPageSize] = useState(50);
     const [activeFilter, setActiveFilter] = useState<number | null>(null);
-    const [storedData, setStoredData] = useState(actionsService.getRequest('get_all_actions_by_city', cityId));
+    const [storedData, setStoredData] = useState(actionsService.getGetAllActionsByCityRequest(cityId));
     const stopCheckingRef = useRef(false);
 
     const { data, refetch } = useList<{ decode: { actions: AlfaAction[] } }>({
@@ -59,7 +59,7 @@ export const AlfaApiTest: React.FC = () => {
     });
 
     useEffect(() => {
-        const data = actionsService.getRequest('get_all_actions_by_city', cityId);
+        const data = actionsService.getGetAllActionsByCityRequest(cityId);
         if (data) {
             setStoredData(data);
             setCurrentStep(1);
@@ -73,91 +73,61 @@ export const AlfaApiTest: React.FC = () => {
         message.info("Проверка остановлена");
     };
 
-    const checkActionAvailability = async (actions: any[]) => {
-        if (!actions?.length) {
-            message.error("Нет данных о мероприятиях");
-            return;
-        }
-
+    const checkActionAvailability = async (actions: AlfaAction[] | undefined) => {
+        if (!actions?.length) return;
+        
         setIsChecking(true);
         stopCheckingRef.current = false;
-
-        try {
-            for (let i = 0; i < actions.length; i++) {
-                if (stopCheckingRef.current) {
-                    return;
-                }
-
-                const action = actions[i];
+        
+        for (const action of actions) {
+            if (stopCheckingRef.current) break;
+            
+            try {
+                // Получаем первую площадку
                 const venueId = Object.keys(action.venues)[0];
-
-                setCurrentActionId(action.actionId);
-                try {
-                    const response = await fetch(`/api/json/get_action_ext`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({
-                            aid: action.actionId,
+                
+                // Проверяем наличие валидного кэша
+                const cachedData = actionsService.getGetActionExtRequest(cityId, action.actionId);
+                if (actionsService.isGetActionExtRequestValid(cityId, action.actionId) && cachedData) {
+                    console.log(`Using cached data for action ${action.actionId}`);
+                    // Используем кэшированные данные
+                    const extData = cachedData.data as any;
+                    message.info(
+                        `Мероприятие ${action.actionName}: ${
+                            extData.available ? 'доступно' : 'недоступно'
+                        }`
+                    );
+                } else {
+                    // Делаем новый запрос
+                    const { data } = await alfaDataProvider.getOne({
+                        resource: "get_action_ext",
+                        id: action.actionId,
+                        meta: {
                             api_key: apiKey,
                             cid: cityId,
                             vid: venueId
-                        })
+                        }
                     });
-
-                    if (stopCheckingRef.current) {
-                        return;
-                    }
-
-                    setCheckResults(prev => ({
-                        ...prev,
-                        [action.actionId]: {
-                            status: response.status,
-                            timestamp: new Date().toLocaleTimeString()
-                        }
-                    }));
-                } catch (error) {
-                    if (stopCheckingRef.current) {
-                        return;
-                    }
-
-                    console.error(`Error checking action ${action.actionId}:`, error);
-                    setCheckResults(prev => ({
-                        ...prev,
-                        [action.actionId]: {
-                            status: 500,
-                            timestamp: new Date().toLocaleTimeString()
-                        }
-                    }));
+                    
+                    // Сохраняем результат в кэш
+                    actionsService.saveGetActionExtRequest(cityId, action.actionId, data.decode);
+                    
+                    message.info(
+                        `Мероприятие ${action.actionName}: ${
+                            data.decode.available ? 'доступно' : 'недоступно'
+                        }`
+                    );
                 }
-
-                if (stopCheckingRef.current) {
-                    return;
-                }
-
-                setProgress({ current: i + 1, total: actions.length });
-
-                if (i < actions.length - 1) {
-                    await sleep(Number(interval));
-                }
+                
+                // Пауза между запросами
+                await new Promise(resolve => setTimeout(resolve, parseInt(interval)));
+            } catch (error) {
+                console.error(`Error checking action ${action.actionId}:`, error);
+                message.error(`Ошибка при проверке мероприятия ${action.actionName}`);
             }
-
-            if (!stopCheckingRef.current) {
-                message.success("Проверка доступности завершена");
-                setCurrentStep(prev => prev + 1);
-            }
-        } catch (error: any) {
-            if (!stopCheckingRef.current) {
-                message.error(`Ошибка при проверке доступности: ${error.message}`);
-            }
-        } finally {
-            if (!stopCheckingRef.current) {
-                setIsChecking(false);
-                setCurrentActionId(null);
-            }
-            stopCheckingRef.current = false;
         }
+        
+        setIsChecking(false);
     };
 
     const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -171,7 +141,7 @@ export const AlfaApiTest: React.FC = () => {
         setCityId(newCityId);
         
         // Проверяем наличие сохраненных данных для нового города
-        const savedData = actionsService.getRequest('get_all_actions_by_city', newCityId);
+        const savedData = actionsService.getGetAllActionsByCityRequest(newCityId);
         setStoredData(savedData);
         setCurrentStep(savedData ? 1 : 0);
         setActiveFilter(null);
@@ -184,8 +154,8 @@ export const AlfaApiTest: React.FC = () => {
         try {
             const result = await refetch();
             if (result.data?.data?.decode?.actions) {
-                actionsService.saveRequest('get_all_actions_by_city', cityId, result.data.data.decode.actions);
-                setStoredData(actionsService.getRequest('get_all_actions_by_city', cityId));
+                actionsService.saveGetAllActionsByCityRequest(cityId, result.data.data.decode.actions);
+                setStoredData(actionsService.getGetAllActionsByCityRequest(cityId));
                 setCurrentStep(1);
                 message.success('Данные успешно получены и сохранены');
             }
@@ -260,7 +230,7 @@ export const AlfaApiTest: React.FC = () => {
                 }}
                 items={[
                     {
-                        title: 'Получить список мероприятий',
+                        title: 'Получить мероприятия',
                         description: (
                             <>
                                 {storedData && (
@@ -294,7 +264,7 @@ export const AlfaApiTest: React.FC = () => {
                         status: storedData?.data?.length ? 'finish' : isFetching ? 'process' : currentStep >= 0 ? 'process' : 'wait'
                     },
                     {
-                        title: 'Проверить доступность',
+                        title: 'Получить события внутри мероприятий',
                         description: (
                             <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 16 }}>
                                 <Button
@@ -332,7 +302,27 @@ export const AlfaApiTest: React.FC = () => {
                         ),
                         status: isChecking ? 'process' : currentStep >= 1 ? 'finish' : 'wait',
                         disabled: !storedData?.data?.length
-                    }
+                    },
+                    {
+                        title: 'Проверить доступность событий',
+                        description: (
+                            <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 16 }}>
+                                <Button
+                                    type={currentStep >= 2 ? "primary" : "default"}
+                                    size="large"
+                                    onClick={() => {}}
+                                    disabled={!storedData?.data?.length}
+                                    style={{ width: '100%' }}
+                                >
+                                    {isChecking ? 'Проверка...' : 'Запустить'}
+                                </Button>
+                        
+                            </Space>
+                        ),
+                        status: isChecking ? 'process' : currentStep >= 1 ? 'finish' : 'wait',
+                        disabled: !storedData?.data?.length
+                    },
+
                 ]}
             />
 
